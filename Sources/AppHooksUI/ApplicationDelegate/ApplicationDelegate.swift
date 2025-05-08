@@ -137,31 +137,31 @@ public final class ApplicationDelegate: AppDelegateBase, ObservableObject {
 
     #elseif os(macOS)
     public func applicationWillFinishLaunching(_ notification: Notification) {
-        if let app = notification.object as? App {
+        if let app = notification.object as? PlatformApplication {
             willFinishLaunching.send(LaunchOptions(application: app, launchOptions: nil))
         }
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
-        if let app = notification.object as? App {
+        if let app = notification.object as? PlatformApplication {
             didFinishLaunching.send(LaunchOptions(application: app, launchOptions: nil))
         }
     }
 
     public func applicationDidBecomeActive(_ notification: Notification) {
-        if let app = notification.object as? App {
+        if let app = notification.object as? PlatformApplication {
             didBecomeActive.send(app)
         }
     }
 
     public func applicationWillResignActive(_ notification: Notification) {
-        if let app = notification.object as? App {
+        if let app = notification.object as? PlatformApplication {
             willResignActive.send(app)
         }
     }
 
     public func applicationWillTerminate(_ notification: Notification) {
-        if let app = notification.object as? App {
+        if let app = notification.object as? PlatformApplication {
             willTerminate.send(app)
         }
     }
