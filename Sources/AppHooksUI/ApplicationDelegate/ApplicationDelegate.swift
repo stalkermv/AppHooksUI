@@ -10,12 +10,12 @@ import Combine
 #if os(iOS)
 import UIKit
 public typealias AppDelegateBase = UIResponder & UIApplicationDelegate
-public typealias App = UIApplication
+public typealias PlatformApplication = UIApplication
 public typealias LaunchOptionsKey = UIApplication.LaunchOptionsKey
 #elseif os(macOS)
 import AppKit
 public typealias AppDelegateBase = NSObject & NSApplicationDelegate
-public typealias App = NSApplication
+public typealias PlatformApplication = NSApplication
 #endif
 
 import Combine
@@ -26,29 +26,29 @@ public final class ApplicationDelegate: AppDelegateBase, ObservableObject {
 
     #if os(iOS)
     public struct LaunchOptions {
-        public let application: App
+        public let application: PlatformApplication
         public let launchOptions: [LaunchOptionsKey: Any]?
     }
 
     public struct RemoteNotificationRegistration {
-        public let application: App
+        public let application: PlatformApplication
         public let deviceToken: Data
     }
 
     public struct ReceiveRemoteNotification {
-        public let application: App
+        public let application: PlatformApplication
         public let userInfo: [AnyHashable: Any]
         public let completionHandler: (UIBackgroundFetchResult) -> Void
     }
 
     public struct ShortcutAction {
-        public let application: App
+        public let application: PlatformApplication
         public let shortcutItem: UIApplicationShortcutItem
         public let completionHandler: (Bool) -> Void
     }
     #else
     public struct LaunchOptions {
-        public let application: App
+        public let application: PlatformApplication
         public let launchOptions: [String: Any]?
     }
     #endif
@@ -56,82 +56,82 @@ public final class ApplicationDelegate: AppDelegateBase, ObservableObject {
     // Shared Subjects
     public let willFinishLaunching = Subject<LaunchOptions, Never>()
     public let didFinishLaunching = Subject<LaunchOptions, Never>()
-    public let didBecomeActive = Subject<App, Never>()
-    public let willResignActive = Subject<App, Never>()
-    public let willTerminate = Subject<App, Never>()
+    public let didBecomeActive = Subject<PlatformApplication, Never>()
+    public let willResignActive = Subject<PlatformApplication, Never>()
+    public let willTerminate = Subject<PlatformApplication, Never>()
 
     #if os(iOS)
-    public let didReceiveMemoryWarning = Subject<App, Never>()
-    public let significantTimeChange = Subject<App, Never>()
+    public let didReceiveMemoryWarning = Subject<PlatformApplication, Never>()
+    public let significantTimeChange = Subject<PlatformApplication, Never>()
     public let didRegisterForRemoteNotifications = Subject<Result<RemoteNotificationRegistration, Error>, Never>()
     public let didReceiveRemoteNotification = Subject<ReceiveRemoteNotification, Never>()
     public let didRequireShortcutAction = Subject<ShortcutAction, Never>()
-    public let didEnterBackground = Subject<App, Never>()
-    public let willEnterForeground = Subject<App, Never>()
-    public let protectedDataWillBecomeUnavailable = Subject<App, Never>()
-    public let protectedDataDidBecomeAvailable = Subject<App, Never>()
+    public let didEnterBackground = Subject<PlatformApplication, Never>()
+    public let willEnterForeground = Subject<PlatformApplication, Never>()
+    public let protectedDataWillBecomeUnavailable = Subject<PlatformApplication, Never>()
+    public let protectedDataDidBecomeAvailable = Subject<PlatformApplication, Never>()
     #endif
 
     #if os(iOS)
-    public func application(_ application: App, willFinishLaunchingWithOptions launchOptions: [LaunchOptionsKey : Any]? = nil) -> Bool {
+    public func application(_ application: PlatformApplication, willFinishLaunchingWithOptions launchOptions: [LaunchOptionsKey : Any]? = nil) -> Bool {
         willFinishLaunching.send(LaunchOptions(application: application, launchOptions: launchOptions))
         return true
     }
 
-    public func application(_ application: App, didFinishLaunchingWithOptions launchOptions: [LaunchOptionsKey : Any]? = nil) -> Bool {
+    public func application(_ application: PlatformApplication, didFinishLaunchingWithOptions launchOptions: [LaunchOptionsKey : Any]? = nil) -> Bool {
         didFinishLaunching.send(LaunchOptions(application: application, launchOptions: launchOptions))
         return true
     }
 
-    public func applicationDidBecomeActive(_ application: App) {
+    public func applicationDidBecomeActive(_ application: PlatformApplication) {
         didBecomeActive.send(application)
     }
 
-    public func applicationWillResignActive(_ application: App) {
+    public func applicationWillResignActive(_ application: PlatformApplication) {
         willResignActive.send(application)
     }
 
-    public func applicationDidReceiveMemoryWarning(_ application: App) {
+    public func applicationDidReceiveMemoryWarning(_ application: PlatformApplication) {
         didReceiveMemoryWarning.send(application)
     }
 
-    public func applicationWillTerminate(_ application: App) {
+    public func applicationWillTerminate(_ application: PlatformApplication) {
         willTerminate.send(application)
     }
 
-    public func applicationSignificantTimeChange(_ application: App) {
+    public func applicationSignificantTimeChange(_ application: PlatformApplication) {
         significantTimeChange.send(application)
     }
 
-    public func application(_ application: App, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+    public func application(_ application: PlatformApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         didRegisterForRemoteNotifications.send(.success(RemoteNotificationRegistration(application: application, deviceToken: deviceToken)))
     }
 
-    public func application(_ application: App, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+    public func application(_ application: PlatformApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
         didRegisterForRemoteNotifications.send(.failure(error))
     }
 
-    public func application(_ application: App, didReceiveRemoteNotification userInfo: [AnyHashable : Any], fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+    public func application(_ application: PlatformApplication, didReceiveRemoteNotification userInfo: [AnyHashable : Any], fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
         didReceiveRemoteNotification.send(ReceiveRemoteNotification(application: application, userInfo: userInfo, completionHandler: completionHandler))
     }
 
-    public func application(_ application: App, performActionFor shortcutItem: UIApplicationShortcutItem, completionHandler: @escaping (Bool) -> Void) {
+    public func application(_ application: PlatformApplication, performActionFor shortcutItem: UIApplicationShortcutItem, completionHandler: @escaping (Bool) -> Void) {
         didRequireShortcutAction.send(ShortcutAction(application: application, shortcutItem: shortcutItem, completionHandler: completionHandler))
     }
 
-    public func applicationDidEnterBackground(_ application: App) {
+    public func applicationDidEnterBackground(_ application: PlatformApplication) {
         didEnterBackground.send(application)
     }
 
-    public func applicationWillEnterForeground(_ application: App) {
+    public func applicationWillEnterForeground(_ application: PlatformApplication) {
         willEnterForeground.send(application)
     }
 
-    public func applicationProtectedDataWillBecomeUnavailable(_ application: App) {
+    public func applicationProtectedDataWillBecomeUnavailable(_ application: PlatformApplication) {
         protectedDataWillBecomeUnavailable.send(application)
     }
 
-    public func applicationProtectedDataDidBecomeAvailable(_ application: App) {
+    public func applicationProtectedDataDidBecomeAvailable(_ application: PlatformApplication) {
         protectedDataDidBecomeAvailable.send(application)
     }
 
