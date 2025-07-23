@@ -25,20 +25,21 @@ extension View {
     ///     print("User responded to notification: \(response.notification)")
     /// }
     /// ```
-    public func onUserNotificationResponse(perform action: @escaping (UNNotificationResponse) -> Void) -> some View {
+    public func onUserNotificationResponse(perform action: @escaping @Sendable @MainActor (UNNotificationResponse) -> Void) -> some View {
         modifier(ReceiveUserNotificationViewModifier(action: action))
     }
 }
 
 struct ReceiveUserNotificationViewModifier: ViewModifier {
-    @Environment(\.userNotificationCenter) var userNotificationCenter
+    @EnvironmentObject private var delegate: ApplicationDelegate
     let action: (UNNotificationResponse) -> Void
     
     func body(content: Content) -> some View {
         content
-            .onReceive(userNotificationCenter.receiveResponseNotificationSubject) { response in
-                action(response)
+            .onReceive(delegate.userNotificationCenter.receiveResponseNotificationSubject.receive(on: RunLoop.main)) { response in
+                if let response {
+                    action(response)
+                }
             }
-        
     }
 }

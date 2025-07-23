@@ -72,9 +72,12 @@ public final class ApplicationDelegate: AppDelegateBase, ObservableObject {
     public let protectedDataDidBecomeAvailable = Subject<PlatformApplication, Never>()
     #endif
 
+    let userNotificationCenter = UserNotificationCenter()
+    
     #if os(iOS)
     public func application(_ application: PlatformApplication, willFinishLaunchingWithOptions launchOptions: [LaunchOptionsKey : Any]? = nil) -> Bool {
         willFinishLaunching.send(LaunchOptions(application: application, launchOptions: launchOptions))
+        UNUserNotificationCenter.current().delegate = userNotificationCenter
         return true
     }
 

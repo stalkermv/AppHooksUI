@@ -25,7 +25,9 @@ extension View {
     ///     return [.alert, .badge]
     /// }
     /// ```
-    public func userNotificationPresentationOptions(_ presentationOptions: @escaping (UNNotification) async -> UNNotificationPresentationOptions) -> some View {
+    public func userNotificationPresentationOptions(
+        _ presentationOptions: @escaping @Sendable (UNNotification) async -> UNNotificationPresentationOptions
+    ) -> some View {
         modifier(PresentUserNotificationViewModifier(presentationOptions))
     }
     
@@ -47,16 +49,17 @@ extension View {
 }
 
 struct PresentUserNotificationViewModifier: ViewModifier {
-    let presentationOptions: (UNNotification) async ->  UNNotificationPresentationOptions
+    @EnvironmentObject private var delegate: ApplicationDelegate
+    let presentationOptions: @Sendable (UNNotification) async -> UNNotificationPresentationOptions
     
-    init(_ presentationOptions: @escaping (UNNotification) async -> UNNotificationPresentationOptions) {
+    init(_ presentationOptions: @escaping @Sendable (UNNotification) async -> UNNotificationPresentationOptions) {
         self.presentationOptions = presentationOptions
     }
     
     func body(content: Content) -> some View {
         content
-            .transformEnvironment(\.userNotificationCenter) {
-                $0.presentationOptions = presentationOptions
+            .transformEnvironment(\.self) { _ in
+                delegate.userNotificationCenter.presentationOptions = presentationOptions
             }
     }
 }
