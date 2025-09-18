@@ -15,7 +15,7 @@ import Combine
     public var presentationOptions: @Sendable (UNNotification) async -> UNNotificationPresentationOptions = { _ in [] }
 
     /// Publisher for notification response events (e.g. when the user taps a notification).
-    public var receiveResponseNotificationSubject = CurrentValueSubject<UNNotificationResponse?, Never>(nil)
+    public var receiveResponseNotificationSubject = BufferedPassthroughSubject<UNNotificationResponse?, Never>()
 
     override nonisolated public init() {
         super.init()
