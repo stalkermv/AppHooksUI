@@ -11,15 +11,24 @@ let package = Package(
         .library(
             name: "AppHooksUI",
             targets: ["AppHooksUI"]),
+        .library(
+            name: "AppHooksModules",
+            targets: ["AppHooksModules"])
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
         // Targets can depend on other targets in this package and products from dependencies.
         .target(
+            name: "AppHooksModules"),
+        .target(
             name: "AppHooksUI"),
         .testTarget(
             name: "AppHooksUITests",
             dependencies: ["AppHooksUI"]
+        ),
+        .testTarget(
+            name: "AppHooksModulesTests",
+            dependencies: ["AppHooksModules"]
         ),
     ]
 )
