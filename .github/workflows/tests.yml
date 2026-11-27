@@ -48,8 +48,13 @@ jobs:
         run: |
           log="${RUNNER_TEMP:-/tmp}/test-ios.log"
           # Newest available iPhone simulator; its name changes between runner images.
+          # Only device lines that start with "iPhone" are kept, so the UUID can never
+          # belong to another kind of device.
           simulator() {
-            xcrun simctl list devices available iPhone | grep -Eo '[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}' | tail -1
+            xcrun simctl list devices available \
+              | grep -E '^[[:space:]]+iPhone' \
+              | grep -Eo '[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}' \
+              | tail -1
           }
           # Installing a platform downloads it from Apple and fails now and then on a network
           # error, so try up to three times with a pause in between.
