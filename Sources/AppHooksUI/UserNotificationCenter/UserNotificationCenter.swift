@@ -1,47 +1,76 @@
 //
 //  UserNotificationCenter.swift
-//
-//  Created by Valeriy Malishevskyi on 10.10.2024.
+//  AppHooksUI
 //
 
+#if os(iOS) || os(macOS)
 import Foundation
 import UserNotifications
-import Combine
 
-/// A notification center wrapper that delegates `UNUserNotificationCenter` events.
-@MainActor public final class UserNotificationCenter: NSObject, ObservableObject, @unchecked Sendable {
-    
-    /// Allows dynamic control of how foreground notifications are presented.
-    public var presentationOptions: @Sendable (UNNotification) async -> UNNotificationPresentationOptions = { _ in [] }
+/// Package-owned `UNUserNotificationCenterDelegate` plumbing.
+///
+/// View modifiers register handlers with this object while they are mounted.
+/// Registration is protected by a lock because UserNotifications may invoke
+/// its delegate off the main actor.
+final class UserNotificationCenter: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
+    typealias PresentationHandler = @Sendable (UNNotification) async -> UNNotificationPresentationOptions
 
-    /// Publisher for notification response events (e.g. when the user taps a notification).
-    public var receiveResponseNotificationSubject = BufferedPassthroughSubject<UNNotificationResponse?, Never>()
+    let responseSubject = BufferedPassthroughSubject<UNNotificationResponse, Never>()
 
-    override nonisolated public init() {
-        super.init()
+    private let lock = NSLock()
+    private var presentationHandlers: [UUID: PresentationHandler] = [:]
+    private var presentationOrder: [UUID] = []
+
+    func registerPresentationHandler(_ handler: @escaping PresentationHandler) -> UUID {
+        let id = UUID()
+        lock.withLock {
+            presentationHandlers[id] = handler
+            presentationOrder.append(id)
+        }
+        return id
     }
-}
 
-extension UserNotificationCenter: UNUserNotificationCenterDelegate {
-    
-    /// Called when a notification is delivered while the app is in the foreground.
-    public nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        return await presentationOptions(notification)
+    func unregisterPresentationHandler(_ id: UUID) {
+        lock.withLock {
+            presentationHandlers.removeValue(forKey: id)
+            presentationOrder.removeAll { $0 == id }
+        }
+    }
+
+    /// Replaces a mounted policy without changing its precedence.
+    func updatePresentationHandler(_ id: UUID, _ handler: @escaping PresentationHandler) {
+        lock.withLock {
+            guard presentationHandlers[id] != nil else { return }
+            presentationHandlers[id] = handler
+        }
+    }
+
+    var currentPresentationHandler: PresentationHandler? {
+        lock.withLock {
+            presentationOrder.last.flatMap { presentationHandlers[$0] }
+        }
+    }
+
+    /// Called when a notification arrives while the app is in the foreground.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        guard let handler = currentPresentationHandler else { return [] }
+        return await handler(notification)
     }
 
     /// Called when the user interacts with a delivered notification.
-    
-    public nonisolated func userNotificationCenter(
+    ///
+    /// The response is enqueued synchronously before the system callback is
+    /// completed. This acknowledgement does not wait for SwiftUI actions.
+    nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        DispatchQueue.main.async { [self] in
-            receiveResponseNotificationSubject.send(response)
-        }
+        responseSubject.send(response)
         completionHandler()
     }
 }
-
-// Retain sendability conformance for UNNotificationResponse
-extension UNNotificationResponse: @unchecked @retroactive Sendable { }
+#endif

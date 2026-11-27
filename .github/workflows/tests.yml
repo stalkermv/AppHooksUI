@@ -1,24 +1,143 @@
-# This workflow will build a Swift project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-swift
-
-name: Test
+name: Tests
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "2.0" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "2.0" ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
-
-    runs-on: macos-15
+  macos:
+    name: Swift Test (macOS)
+    runs-on: xcode-27
+    timeout-minutes: 30
 
     steps:
-    - name: Select Xcode 16.3
-      run: sudo xcode-select -s /Applications/Xcode_16.3.app
-    - uses: actions/checkout@v4
-    - name: Build
-      run: swift build -v
-    - name: Run tests
-      run: swift test -v
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 27.2
+        run: sudo xcode-select -s /Applications/Xcode_27.2.app
+
+      - name: Build
+        run: swift build -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
+
+      - name: Test
+        run: swift test -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
+
+  ios:
+    name: Test on iOS Simulator
+    runs-on: xcode-27
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 27.2
+        run: sudo xcode-select -s /Applications/Xcode_27.2.app
+
+      - name: Test
+        run: |
+          log="${RUNNER_TEMP:-/tmp}/test-ios.log"
+          # Newest available iPhone simulator; its name changes between runner images.
+          # Only device lines that start with "iPhone" are kept, so the UUID can never
+          # belong to another kind of device.
+          simulator() {
+            xcrun simctl list devices available \
+              | grep -E '^[[:space:]]+iPhone' \
+              | grep -Eo '[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}' \
+              | tail -1
+          }
+          # Installing a platform downloads it from Apple and fails now and then on a network
+          # error, so try up to three times with a pause in between.
+          download_platform() {
+            for pause in 0 15 45; do
+              sleep "$pause"
+              if xcodebuild -downloadPlatform "$1"; then
+                return 0
+              fi
+            done
+            return 1
+          }
+          run_tests() {
+            udid="$(simulator)"
+            if [ -z "$udid" ]; then
+              echo "No iOS simulator available" | tee "$log"
+              return 1
+            fi
+            xcodebuild test \
+              -scheme AppHooksUI-Package \
+              -destination "platform=iOS Simulator,id=$udid" \
+              -parallel-testing-enabled NO \
+              CODE_SIGNING_ALLOWED=NO \
+              SWIFT_STRICT_CONCURRENCY=complete \
+              SWIFT_TREAT_WARNINGS_AS_ERRORS=YES 2>&1 | tee "$log"
+            return "${PIPESTATUS[0]}"
+          }
+          if ! run_tests; then
+            # Some runners come without the iOS platform. Install it and retry;
+            # fail on any other error.
+            if grep -qE "is not installed|No iOS simulator available" "$log"; then
+              download_platform iOS
+              run_tests
+            else
+              exit 1
+            fi
+          fi
+
+  example:
+    name: Build LifecycleHost (${{ matrix.platform }})
+    runs-on: xcode-27
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: iOS
+            scheme: LifecycleHost-iOS
+            destination: generic/platform=iOS Simulator
+          - platform: macOS
+            scheme: LifecycleHost-macOS
+            destination: generic/platform=macOS
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 27.2
+        run: sudo xcode-select -s /Applications/Xcode_27.2.app
+
+      - name: Build
+        env:
+          SCHEME: ${{ matrix.scheme }}
+          DESTINATION: ${{ matrix.destination }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          log="${RUNNER_TEMP:-/tmp}/build.log"
+          build() {
+            xcodebuild build-for-testing \
+              -project Examples/LifecycleHost/LifecycleHost.xcodeproj \
+              -scheme "$SCHEME" \
+              -destination "$DESTINATION" \
+              CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$log"
+            return "${PIPESTATUS[0]}"
+          }
+          if ! build; then
+            # Some runners come without the platform that Xcode needs for a
+            # generic destination. Install it and retry; fail on any other error.
+            if grep -q "is not installed" "$log"; then
+              xcodebuild -downloadPlatform "$PLATFORM"
+              build
+            else
+              exit 1
+            fi
+          fi

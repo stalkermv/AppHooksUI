@@ -1,56 +1,44 @@
-//
-//  View+onReceiveRemoteNotification.swift
-//
-//  Created by Valeriy Malishevskyi on 12.11.2024.
-//
-
 import SwiftUI
-import Combine
-
-/// A wrapper for the payload of a received push notification.
-public struct PushNotification {
-    public let userInfo: [AnyHashable: Any]
-}
 
 #if os(iOS)
-import UIKit
-public typealias RemoteNotificationResult = UIBackgroundFetchResult
-#else
-public enum RemoteNotificationResult {
-    case noData
-    case newData
-    case failed
-}
-#endif
-
+/// Registers one SwiftUI handler for background APNs notifications.
 extension View {
-
-    /// Registers a handler for incoming push notifications.
-    /// On macOS, this is a no-op.
-    public func onReceiveRemoteNotification(_ handler: @escaping (PushNotification) -> RemoteNotificationResult) -> some View {
-        #if os(iOS)
-        return modifier(ReceiveRemoteNotificationViewModifier(handler))
-        #else
-        return self // No-op on macOS
-        #endif
+    /// Handles a remote notification and returns the result sent to UIKit.
+    ///
+    /// The library owns the system completion callback. If several views are
+    /// mounted, the most recently mounted still-registered handler wins.
+    /// Unmounting that handler restores the still-mounted predecessor. If no
+    /// view handles the event, `.noData` is sent synchronously.
+    @MainActor
+    public func onReceiveRemoteNotification(
+        _ handler: @escaping @MainActor (PushNotification) -> RemoteNotificationResult
+    ) -> some View {
+        modifier(ReceiveRemoteNotificationViewModifier(handler: handler))
     }
 }
 
-#if os(iOS)
-struct ReceiveRemoteNotificationViewModifier: ViewModifier {
+@MainActor
+private struct ReceiveRemoteNotificationViewModifier: ViewModifier {
+    @EnvironmentObject private var appDelegate: ApplicationDelegate
+    @State private var registrationID: UUID?
 
-    @EnvironmentObject var appDelegate: ApplicationDelegate
-    let handler: (PushNotification) -> RemoteNotificationResult
-    
-    init(_ handler: @escaping (PushNotification) -> RemoteNotificationResult) {
-        self.handler = handler
-    }
-    
+    private let handlerRevision = UUID()
+    let handler: @MainActor (PushNotification) -> RemoteNotificationResult
+
     func body(content: Content) -> some View {
         content
-            .onReceive(appDelegate.didReceiveRemoteNotification) { notification in
-                let result = handler(PushNotification(userInfo: notification.userInfo))
-                notification.completionHandler(result)
+            .onAppear {
+                guard registrationID == nil else { return }
+                registrationID = appDelegate.registerRemoteNotificationHandler(handler)
+            }
+            .onChange(of: handlerRevision) {
+                guard let registrationID else { return }
+                appDelegate.updateRemoteNotificationHandler(registrationID, handler)
+            }
+            .onDisappear {
+                guard let registrationID else { return }
+                appDelegate.unregisterRemoteNotificationHandler(registrationID)
+                self.registrationID = nil
             }
     }
 }
