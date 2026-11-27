@@ -1,108 +1,198 @@
-//
-//  BufferedPassthroughSubject.swift
-//  AppHooksUI
-//
-//  Created by Valeriy Malishevskyi on 18.09.2025.
-//
-
 import Combine
 import Foundation
 
-/// A "deliver-later once" subject.
+/// Internal one-slot publisher for notification callbacks received before a
+/// view subscribes. It is not a public lifecycle/event abstraction.
 ///
-/// Behaviour:
-/// - While there are NO subscribers, the latest value sent is buffered (only one kept).
-/// - When the FIRST subscriber (after a period of zero subscribers) attaches, the buffered
-///   value (if any) is delivered exactly once to THAT subscriber only, then the buffer is cleared.
-/// - Additional subscribers attaching at the same moment or afterwards DO NOT receive that past value.
-/// - After the buffer is cleared, the subject acts exactly like a `PassthroughSubject` for all active subscribers.
-/// - Upon completion, the buffer is cleared and further sends are ignored.
-public final class BufferedPassthroughSubject<Output, Failure: Error>: Subject {
-    
-    // MARK: - Internal State
+/// State and event queues use one lock. Each subscriber has one drain owner;
+/// callbacks run outside the lock and reentrant sends enqueue behind the active
+/// callback. Completion waits for the subscription handshake to return.
+final class BufferedPassthroughSubject<Output, Failure: Error>: Subject, @unchecked Sendable {
+    private enum Event {
+        case value(Output)
+        case completion(Subscribers.Completion<Failure>)
+    }
+
+    private final class SubscriberState {
+        let id = UUID()
+        let subscriber: AnySubscriber<Output, Failure>
+        var demand: Subscribers.Demand = .none
+        var isReady = false
+        var isDraining = false
+        var isCancelled = false
+        var pending: [Event] = []
+        var nextEvent = 0
+
+        init(_ subscriber: AnySubscriber<Output, Failure>) {
+            self.subscriber = subscriber
+        }
+    }
+
+    private final class Token: Subscription, @unchecked Sendable {
+        private let lock = NSLock()
+        private weak var subject: BufferedPassthroughSubject?
+        private let id: UUID
+
+        init(subject: BufferedPassthroughSubject, id: UUID) {
+            self.subject = subject
+            self.id = id
+        }
+
+        func request(_ demand: Subscribers.Demand) {
+            guard demand > .none else { return }
+            let owner = lock.withLock { subject }
+            owner?.request(demand, for: id)
+        }
+
+        func cancel() {
+            let owner = lock.withLock {
+                let owner = subject
+                subject = nil
+                return owner
+            }
+            owner?.cancel(id: id)
+        }
+    }
+
+    private let lock = NSLock()
     private var buffered: Output?
-    private var subscribers: [UUID: AnySubscriber<Output, Failure>] = [:]
-    private var isFinished = false
-    private var completion: Subscribers.Completion<Failure>? = nil
-    private var hasDeliveredBufferedForCurrentCycle = false
-    
-    public init() {}
-    
-    // MARK: - Sending
-    public func send(_ value: Output) {
-        guard !isFinished else { return }
-        
-        if subscribers.isEmpty {
-            buffered = value
-        } else {
-            for sub in subscribers.values { _ = sub.receive(value) }
+    private var bufferedRecipientID: UUID?
+    private var subscribers: [SubscriberState] = []
+    private var completion: Subscribers.Completion<Failure>?
+
+    func send(_ value: Output) {
+        let recipients = lock.withLock {
+            guard completion == nil else { return [SubscriberState]() }
+            if subscribers.isEmpty {
+                buffered = value
+                bufferedRecipientID = nil
+            }
+            let recipients = subscribers.filter { !$0.isCancelled && $0.demand > .none }
+            for state in recipients {
+                state.demand -= .max(1)
+                state.pending.append(.value(value))
+            }
+            return recipients
         }
+        recipients.forEach(drain)
     }
-    
-    public func send(completion: Subscribers.Completion<Failure>) {
-        guard !isFinished else { return }
-        
-        isFinished = true
-        buffered = nil
-        self.completion = completion
-        
-        for sub in subscribers.values {
-            sub.receive(completion: completion)
+
+    func send(completion: Subscribers.Completion<Failure>) {
+        let recipients = lock.withLock {
+            guard self.completion == nil else { return [SubscriberState]() }
+            self.completion = completion
+            buffered = nil
+            bufferedRecipientID = nil
+            for state in subscribers {
+                state.pending.append(.completion(completion))
+            }
+            return subscribers
         }
-        subscribers.removeAll()
+        recipients.forEach(drain)
     }
-    
-    public func send(subscription: any Subscription) {
-        // No upstream; ignore or immediately request unlimited.
+
+    func send(subscription: any Subscription) {
         subscription.request(.unlimited)
     }
-    
-    // MARK: - Subscription
-    private final class Token: Subscription {
-        private let cancelHandler: () -> Void
-        
-        private var isCancelled = false
-        
-        init(_ cancel: @escaping () -> Void) {
-            self.cancelHandler = cancel
+
+    func receive<S: Subscriber>(subscriber: S) where S.Input == Output, S.Failure == Failure {
+        let state = SubscriberState(AnySubscriber(subscriber))
+        let token = Token(subject: self, id: state.id)
+        lock.withLock {
+            if let completion {
+                state.pending.append(.completion(completion))
+            } else if subscribers.isEmpty, buffered != nil {
+                bufferedRecipientID = state.id
+            }
+            subscribers.append(state)
         }
-        
-        func request(_ demand: Subscribers.Demand) {
-            /* we push, ignore demand */
+
+        subscriber.receive(subscription: token)
+
+        lock.withLock {
+            guard !state.isCancelled else { return }
+            state.isReady = true
+            takeBuffered(for: state)
         }
-        
-        func cancel() {
-            guard !isCancelled else { return }
-            
-            isCancelled = true
-            cancelHandler()
-        }
+        drain(state)
     }
-    
-    public func receive<S: Subscriber>(subscriber: S) where S.Input == Output, S.Failure == Failure {
-        let id = UUID()
-        
-        // If already finished, immediately send completion and return.
-        if let completion {
-            subscriber.receive(subscription: Token { /* nothing */ })
-            subscriber.receive(completion: completion)
-            return
+
+    private func request(_ demand: Subscribers.Demand, for id: UUID) {
+        let state = lock.withLock {
+            guard completion == nil, let state = subscribers.first(where: { $0.id == id }) else {
+                return Optional<SubscriberState>.none
+            }
+            state.demand += demand
+            takeBuffered(for: state)
+            return state
         }
-        
-        let any = AnySubscriber(subscriber)
-        subscribers[id] = any
-        
-        subscriber.receive(subscription: Token { [weak self] in
-            guard let self else { return }
-            self.subscribers.removeValue(forKey: id)
-            if self.subscribers.isEmpty { self.hasDeliveredBufferedForCurrentCycle = false }
-        })
-        
-        // First subscriber after idle period? Deliver buffered once.
-        if !hasDeliveredBufferedForCurrentCycle, subscribers.count == 1, let v = buffered {
-            buffered = nil
-            hasDeliveredBufferedForCurrentCycle = true
-            _ = any.receive(v)
+        if let state { drain(state) }
+    }
+
+    private func cancel(id: UUID) {
+        let successor = lock.withLock {
+            guard let index = subscribers.firstIndex(where: { $0.id == id }) else {
+                return Optional<SubscriberState>.none
+            }
+            let removed = subscribers.remove(at: index)
+            removed.isCancelled = true
+            removed.pending.removeAll()
+            if bufferedRecipientID == id {
+                bufferedRecipientID = subscribers.first?.id
+                if let next = subscribers.first {
+                    takeBuffered(for: next)
+                    return next
+                }
+            }
+            return nil
+        }
+        if let successor { drain(successor) }
+    }
+
+    /// Requires the subject lock.
+    private func takeBuffered(for state: SubscriberState) {
+        guard completion == nil, !state.isCancelled, state.demand > .none,
+              bufferedRecipientID == state.id, let buffered else { return }
+        self.buffered = nil
+        bufferedRecipientID = nil
+        state.demand -= .max(1)
+        state.pending.append(.value(buffered))
+    }
+
+    private func drain(_ state: SubscriberState) {
+        let ownsDrain = lock.withLock {
+            guard state.isReady, !state.isCancelled, !state.isDraining else { return false }
+            state.isDraining = true
+            return true
+        }
+        guard ownsDrain else { return }
+
+        while let event = lock.withLock({ () -> Event? in
+            guard !state.isCancelled, state.nextEvent < state.pending.count else {
+                state.pending.removeAll(keepingCapacity: true)
+                state.nextEvent = 0
+                state.isDraining = false
+                return nil
+            }
+            let event = state.pending[state.nextEvent]
+            state.nextEvent += 1
+            if case .completion = event {
+                subscribers.removeAll { $0 === state }
+                state.isCancelled = true
+            }
+            return event
+        }) {
+            switch event {
+            case let .value(value):
+                let additionalDemand = state.subscriber.receive(value)
+                lock.withLock {
+                    if !state.isCancelled, completion == nil {
+                        state.demand += additionalDemand
+                    }
+                }
+            case let .completion(completion):
+                state.subscriber.receive(completion: completion)
+            }
         }
     }
 }

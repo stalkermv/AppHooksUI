@@ -1,45 +1,31 @@
-//
-//  View+OnReceiveUserNotification.swift
-//
-//  Created by Valeriy Malishevskyi on 10.10.2024.
-//
-
 import SwiftUI
 import UserNotifications
 
 extension View {
-    /// Attaches an action to be performed when a user notification response is received.
+    /// Handles a user interaction with a delivered notification.
     ///
-    /// This method applies a custom view modifier that listens for incoming
-    /// `UNNotificationResponse` instances and triggers the provided action when a
-    /// user responds to a notification, such as interacting with it or dismissing it.
-    ///
-    /// - Parameter action: A closure that handles the received `UNNotificationResponse`.
-    ///   The closure is marked as `@Sendable` to ensure thread safety when invoked.
-    /// - Returns: A view that listens for user notification responses and performs the action.
-    ///
-    /// Usage:
-    /// ```swift
-    /// .onUserNotificationResponse { response in
-    ///     // Handle the notification response
-    ///     print("User responded to notification: \(response.notification)")
-    /// }
-    /// ```
-    public func onUserNotificationResponse(perform action: @escaping @Sendable @MainActor (UNNotificationResponse) -> Void) -> some View {
-        modifier(ReceiveUserNotificationViewModifier(action: action))
+    /// A response that arrives before any view subscribes, for example when a
+    /// tap launches the app, is kept and delivered once, to the first
+    /// subscriber. The action runs on the main actor.
+    @MainActor
+    public func onUserNotificationResponse(
+        perform action: @escaping @Sendable @MainActor (UNNotificationResponse) -> Void
+    ) -> some View {
+        modifier(UserNotificationResponseViewModifier(action: action))
     }
 }
 
-struct ReceiveUserNotificationViewModifier: ViewModifier {
-    @EnvironmentObject private var delegate: ApplicationDelegate
-    let action: (UNNotificationResponse) -> Void
-    
+@MainActor
+private struct UserNotificationResponseViewModifier: ViewModifier {
+    @EnvironmentObject private var appDelegate: ApplicationDelegate
+    let action: @Sendable @MainActor (UNNotificationResponse) -> Void
+
     func body(content: Content) -> some View {
-        content
-            .onReceive(delegate.userNotificationCenter.receiveResponseNotificationSubject.receive(on: RunLoop.main)) { response in
-                if let response {
-                    action(response)
-                }
-            }
+        content.onReceive(
+            appDelegate.userNotificationCenter.responseSubject
+                .receive(on: RunLoop.main)
+        ) { response in
+            action(response)
+        }
     }
 }

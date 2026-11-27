@@ -1,161 +1,147 @@
-//
-//  BufferedPassthroughSubjectTests.swift
-//  AppHooksUI
-//
-//  Created by Valeriy Malishevskyi on 18.09.2025.
-//
-
-
+@preconcurrency import Dispatch
 import Combine
+import Foundation
 import Testing
 @testable import AppHooksUI
 
-@Suite(.serialized)
-class BufferedPassthroughSubjectTests {
-    
-    // Keep subscriptions alive
-    private var cancellables = Set<AnyCancellable>()
-    
+#if os(macOS)
+import AppKit
+#endif
+
+struct BufferedPassthroughSubjectTests {
     @Test
-    func passThroughWithActiveSubscriber() {
+    func passesValuesToActiveSubscribers() {
         let subject = BufferedPassthroughSubject<String, Never>()
         var received: [String] = []
-        
-        subject.sink { received.append($0) }.store(in: &cancellables)
-        
+        let cancellable = subject.sink { received.append($0) }
+        defer { cancellable.cancel() }
+
         subject.send("A")
         subject.send("B")
-        
+
         #expect(received == ["A", "B"])
     }
-    
+
     @Test
-    func buffersLatestWhenNoSubscribers_thenDeliversOnceOnSubscribe() {
+    func buffersLatestValueAndDeliversItOnlyOnce() {
         let subject = BufferedPassthroughSubject<Int, Never>()
-        
-        // No subscribers yet — these should buffer (only the latest kept)
         subject.send(1)
         subject.send(2)
-        
-        var received: [Int] = []
-        subject.sink { received.append($0) }.store(in: &cancellables)
-        
-        // On first subscribe, the buffered "2" should be emitted once
-        #expect(received == [2])
-        
-        // Now behaves like passthrough
+
+        var first: [Int] = []
+        let firstCancellable = subject.sink { first.append($0) }
+        #expect(first == [2])
+
+        var second: [Int] = []
+        let secondCancellable = subject.sink { second.append($0) }
         subject.send(3)
-        #expect(received == [2, 3])
-        
-        // Unsubscribe (drop all)
-        cancellables.removeAll()
-        
-        // Re-subscribing without sending should NOT replay anything (buffer was cleared)
-        var received2: [Int] = []
-        subject.sink { received2.append($0) }.store(in: &cancellables)
-        
-        #expect(received2.isEmpty)
+
+        #expect(first == [2, 3])
+        #expect(second == [3])
+        firstCancellable.cancel()
+        secondCancellable.cancel()
     }
-    
+
     @Test
-    @MainActor
-    func onlyLatestIsBufferedAcrossMultipleSendsWithoutSubscribers() {
-        let subject = BufferedPassthroughSubject<String, Never>()
-        
-        subject.send("first")
-        subject.send("second")
-        subject.send("third") // only "third" should be kept
-        
-        var received: [String] = []
-        subject.sink { received.append($0) }.store(in: &cancellables)
-        
-        #expect(received == ["third"])
+    func positiveDemandIsRequiredForBufferedDelivery() throws {
+        let subject = BufferedPassthroughSubject<Int, Never>()
+        subject.send(42)
+
+        let subscriber = ControlledSubscriber<Int>(initialDemand: .none)
+        subject.receive(subscriber: subscriber)
+        #expect(subscriber.values.isEmpty)
+
+        let subscription = try #require(subscriber.subscription)
+        subscription.request(.max(1))
+        #expect(subscriber.values == [42])
     }
-    
+
     @Test
-    func completionPreventsFurtherDelivery_andClearsBuffer() {
-        // Case A: complete *before* any subscriber
-        do {
-            let subject = BufferedPassthroughSubject<Int, Never>()
-            subject.send(42)                 // buffered
-            subject.send(completion: .finished)
-            
-            var received: [Int] = []
-            subject.sink { received.append($0) }.store(in: &cancellables)
-            
-            // Buffer should have been cleared by completion; nothing delivered
-            #expect(received.isEmpty)
-            
-            // Further sends are ignored
-            subject.send(100)
-            #expect(received.isEmpty)
+    func finiteDemandAndReturnedDemandAreRespected() {
+        let subject = BufferedPassthroughSubject<Int, Never>()
+        let subscriber = ControlledSubscriber<Int>(
+            initialDemand: .max(1),
+            returnedDemand: .max(1)
+        )
+        subject.receive(subscriber: subscriber)
+
+        subject.send(1)
+        subject.send(2)
+        subject.send(3)
+
+        #expect(subscriber.values == [1, 2, 3])
+    }
+
+    @Test
+    func completionClearsBufferAndPreventsFurtherDelivery() {
+        let subject = BufferedPassthroughSubject<Int, Never>()
+        subject.send(42)
+        subject.send(completion: .finished)
+
+        var received: [Int] = []
+        var completed = false
+        let cancellable = subject.sink(
+            receiveCompletion: { _ in completed = true },
+            receiveValue: { received.append($0) }
+        )
+        defer { cancellable.cancel() }
+
+        subject.send(100)
+        #expect(received.isEmpty)
+        #expect(completed)
+    }
+
+    @Test
+    func callbackMaySendReentrantly() {
+        let subject = BufferedPassthroughSubject<Int, Never>()
+        let subscriber = ReentrantSubscriber(subject: subject)
+        subject.receive(subscriber: subscriber)
+
+        subject.send(1)
+
+        #expect(subscriber.values == [1, 2])
+        #expect(subscriber.reentrantValues == [2])
+    }
+
+    @Test
+    func concurrentSendAndCompletionAreSafe() {
+        let subject = BufferedPassthroughSubject<Int, Never>()
+        let counter = LockedCounter()
+        let cancellable = subject.sink { _ in counter.increment() }
+
+        DispatchQueue.concurrentPerform(iterations: 8) { worker in
+            for value in 0..<100 {
+                subject.send(worker * 100 + value)
+            }
         }
-        
-        // Case B: complete *with* subscribers
-        do {
-            let subject = BufferedPassthroughSubject<Int, Never>()
-            var received: [Int] = []
-            
-            subject.sink { received.append($0) }.store(in: &cancellables)
-            
+        subject.send(completion: .finished)
+        cancellable.cancel()
+
+        #expect(counter.value == 800)
+    }
+
+    @Test
+    func concurrentSendDoesNotOverlapCallbacks() throws {
+        let subject = BufferedPassthroughSubject<Int, Never>()
+        let probe = SerializationProbe(subject: subject)
+        subject.receive(subscriber: probe)
+        defer { probe.releaseFirstCallback.signal() }
+
+        let sendFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
             subject.send(1)
-            subject.send(completion: .finished)
-            subject.send(2) // ignored
-            #expect(received == [1])
+            sendFinished.signal()
         }
+
+        try #require(probe.firstCallbackStarted.wait(timeout: .now() + 5) == .success)
+        try #require(probe.concurrentSendStarted.wait(timeout: .now() + 5) == .success)
+        try #require(probe.concurrentSendFinished.wait(timeout: .now() + 5) == .success)
+        probe.releaseFirstCallback.signal()
+        try #require(sendFinished.wait(timeout: .now() + 5) == .success)
+        try #require(probe.releaseWaitResult == .success)
+
+        #expect(probe.overlapDetected == false)
+        #expect(probe.count == 2)
     }
-    
-    @Test
-    func onlyFirstSubscriberReceivesBuffered_thenPassthroughToAll() {
-        let subject = BufferedPassthroughSubject<String, Never>()
-        
-        // No subscribers; buffer "hello" (latest only)
-        subject.send("hello")
-        
-        var first: [String] = []
-        var second: [String] = []
-        
-        // First subscriber attaches -> should receive buffered value exactly once
-        subject.sink { first.append($0) }.store(in: &cancellables)
-        #expect(first == ["hello"])
-        #expect(second.isEmpty)
-        
-        // Second subscriber attaches AFTER buffer is cleared -> receives nothing immediately
-        subject.sink { second.append($0) }.store(in: &cancellables)
-        #expect(first == ["hello"]) // unchanged
-        #expect(second.isEmpty)
-        
-        // Now behaves like passthrough for all active subscribers
-        subject.send("world")
-        #expect(first == ["hello", "world"])
-        #expect(second == ["world"])
-    }
-    
-    @Test
-    func reSubscribeAfterReceivingBufferedDoesNotReplay() {
-        let subject = BufferedPassthroughSubject<String, Never>()
-        
-        subject.send("missed") // buffer
-        
-        var first: [String] = []
-        var second: [String] = []
-        
-        // First subscriber gets the buffered value once
-        var c1: AnyCancellable?
-        c1 = subject.sink { first.append($0) }
-        if let c1 { c1.store(in: &cancellables) }
-        
-        #expect(first == ["missed"])
-        
-        // Cancel first subscriber
-        cancellables.removeAll()
-        
-        // Re-subscribe: buffer was cleared, so nothing should arrive immediately
-        subject.sink { second.append($0) }.store(in: &cancellables)
-        #expect(second.isEmpty)
-        
-        // Sending now should pass through
-        subject.send("now")
-        #expect(second == ["now"])
-    }
+
 }
