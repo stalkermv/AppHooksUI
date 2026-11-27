@@ -1,7 +1,6 @@
 import Testing
 @testable import AppHooksModules
 
-@Suite
 struct ModuleDependencyResolverTests {
 
     @Test
@@ -12,7 +11,7 @@ struct ModuleDependencyResolverTests {
             FeatureModule()
         ]
 
-        let resolver = ModuleDependencyResolver(modules: modules)
+        let resolver = ApplicationModuleResolver(modules: modules)
         let resolvedKeys = try resolver.resolve().map(\.key)
 
         #expect(resolvedKeys == [
@@ -25,12 +24,12 @@ struct ModuleDependencyResolverTests {
     @Test
     func throwsWhenDependencyIsMissing() {
         let modules: [ApplicationModule] = [BrokenModule()]
-        let resolver = ModuleDependencyResolver(modules: modules)
+        let resolver = ApplicationModuleResolver(modules: modules)
 
         do {
             _ = try resolver.resolve()
             Issue.record("Expected missingDependency error to be thrown")
-        } catch let error as ModuleDependencyResolver.DependencyResolutionError {
+        } catch let error as ApplicationModuleResolutionError {
             guard case let .missingDependency(dependent, missing) = error else {
                 Issue.record("Unexpected error: \(error)")
                 return
@@ -50,12 +49,12 @@ struct ModuleDependencyResolverTests {
             SecondModule()
         ]
 
-        let resolver = ModuleDependencyResolver(modules: modules)
+        let resolver = ApplicationModuleResolver(modules: modules)
 
         do {
             _ = try resolver.resolve()
             Issue.record("Expected cyclicDependency error to be thrown")
-        } catch let error as ModuleDependencyResolver.DependencyResolutionError {
+        } catch let error as ApplicationModuleResolutionError {
             guard case let .cyclicDependency(keys) = error else {
                 Issue.record("Unexpected error: \(error)")
                 return
@@ -68,34 +67,108 @@ struct ModuleDependencyResolverTests {
             Issue.record("Unexpected error type: \(error)")
         }
     }
+
+    @Test
+    func preservesInputOrderForIndependentModules() throws {
+        let modules: [ApplicationModule] = [
+            IndependentB(),
+            IndependentA()
+        ]
+
+        let resolved = try ApplicationModuleResolver(modules: modules).resolve()
+        #expect(resolved.map(\.key) == [
+            IndependentB.identifier,
+            IndependentA.identifier
+        ])
+    }
+
+    @Test
+    func throwsForDuplicateModuleKey() {
+        let resolver = ApplicationModuleResolver(modules: [DuplicateModule(), DuplicateModule()])
+
+        do {
+            _ = try resolver.resolve()
+            Issue.record("Expected duplicateModule error to be thrown")
+        } catch let error as ApplicationModuleResolutionError {
+            #expect(error == .duplicateModule(DuplicateModule.identifier))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test
+    func reportsDuplicateDependencies() {
+        let resolver = ApplicationModuleResolver(modules: [AnalyticsModule(), DuplicateDependencyModule()])
+
+        do {
+            _ = try resolver.resolve()
+            Issue.record("Expected duplicateDependency error to be thrown")
+        } catch let error as ApplicationModuleResolutionError {
+            #expect(error == .duplicateDependency(
+                dependent: DuplicateDependencyModule.key,
+                dependency: AnalyticsModule.key
+            ))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test
+    func defaultKeysRetainTypeQualification() {
+        #expect(NamespaceA.StartupModule.key != NamespaceB.StartupModule.key)
+    }
+
+    @Test
+    func staticKeyCanOverrideTheDefaultIdentifier() throws {
+        let resolved = try ApplicationModuleResolver(modules: [StaticIdentifierModule()]).resolve()
+        let first = try #require(resolved.first)
+        #expect(first.key == StaticIdentifierModule.key)
+    }
+
+    @Test
+    @MainActor
+    func bootstrapConfiguresModulesInResolvedOrder() throws {
+        let recorder = ConfigurationRecorder()
+        let modules: [ApplicationModule] = [
+            BootstrapSecond(recorder: recorder),
+            BootstrapFirst(recorder: recorder)
+        ]
+
+        try ApplicationModuleBootstrap(modules: modules).configure(application: PlatformApplication.shared)
+        #expect(recorder.events == [BootstrapFirst.key.value, BootstrapSecond.key.value])
+    }
+
+    @Test
+    func resultBuilderKeepsTrueBranchOrder() {
+        let modules = makeModules(includeLogging: true)
+
+        #expect(modules.map(\.key) == [
+            AnalyticsModule.key,
+            LoggingModule.key,
+            FeatureModule.key
+        ])
+    }
+
+    @Test
+    func resultBuilderDropsTheFalseBranch() {
+        let modules = makeModules(includeLogging: false)
+
+        #expect(modules.map(\.key) == [
+            AnalyticsModule.key,
+            FeatureModule.key
+        ])
+    }
 }
 
-private final class AnalyticsModule: ApplicationModule {
-    func configure(application: UIApplication) throws {}
+@ApplicationModuleBuilder
+private func makeModules(includeLogging: Bool) -> [ApplicationModule] {
+    AnalyticsModule()
+    if includeLogging {
+        [LoggingModule()]
+    }
+    Optional<FeatureModule>.none
+    [] as [ApplicationModule]
+    for module in [FeatureModule()] {
+        module
+    }
 }
-
-private final class LoggingModule: ApplicationModule {
-    let dependencies = [AnalyticsModule.key]
-    func configure(application: UIApplication) throws {}
-}
-
-private final class FeatureModule: ApplicationModule {
-    let dependencies = [LoggingModule.key]
-    func configure(application: UIApplication) throws {}
-}
-
-private final class BrokenModule: ApplicationModule {
-    let dependencies = [ApplicationModuleKey(value: "GhostModule")]
-    func configure(application: UIApplication) throws {}
-}
-
-private final class FirstModule: ApplicationModule {
-    let dependencies = [SecondModule.key]
-    func configure(application: UIApplication) throws {}
-}
-
-private final class SecondModule: ApplicationModule {
-    let dependencies = [FirstModule.key]
-    func configure(application: UIApplication) throws {}
-}
-

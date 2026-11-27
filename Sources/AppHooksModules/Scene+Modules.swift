@@ -1,14 +1,13 @@
 import SwiftUI
-#if os(macOS)
-import AppKit
-#endif
-#if os(watchOS)
-import WatchKit
-#endif
 
 extension Scene {
     /// Configures an ordered list of ``ApplicationModule`` instances before the
     /// scene hierarchy is rendered.
+    ///
+    /// The modifier is fail-fast: malformed dependencies or a throwing module
+    /// are startup failures, not partially configured applications hidden by a
+    /// debug-only log. SwiftUI may recreate scene values, so modules should be
+    /// idempotent.
     @MainActor public func modules(
         @ApplicationModuleBuilder modules: () -> [ApplicationModule]
     ) -> some Scene {
@@ -22,47 +21,17 @@ extension Scene {
     init(content: Content, modules: [ApplicationModule]) {
         self.content = content
 
+        guard !modules.isEmpty else { return }
+
         do {
-            try ApplicationModuleScene.configureModules(modules)
+            try ApplicationModuleBootstrap(modules: modules)
+                .configure(application: PlatformApplication.shared)
         } catch {
-            #if DEBUG
-            print("AppHooksModules: failed to configure modules: \(error)")
-            #endif
+            preconditionFailure("AppHooksModules failed to configure modules: \(error)")
         }
     }
 
     var body: some Scene {
         content
     }
-
-    private static func configureModules(_ modules: [ApplicationModule]) throws {
-        guard !modules.isEmpty else { return }
-
-        let resolver = ModuleDependencyResolver(modules: modules)
-        let sortedModules = try resolver.resolve()
-
-        guard let application = sharedApplication else {
-            #if DEBUG
-            print("AppHooksModules: unable to access shared application instance for this platform.")
-            #endif
-            return
-        }
-
-        for module in sortedModules {
-            try module.configure(application: application)
-        }
-    }
-}
-
-@MainActor
-private var sharedApplication: UIApplication? {
-    #if os(iOS) || os(tvOS)
-    UIApplication.shared
-    #elseif os(macOS)
-    NSApplication.shared
-    #elseif os(watchOS)
-    WKExtension.shared()
-    #else
-    nil
-    #endif
 }
