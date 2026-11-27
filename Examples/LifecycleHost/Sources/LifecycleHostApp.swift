@@ -35,7 +35,7 @@ struct LifecycleHostApp: App {
 }
 
 private struct HostModule: ApplicationModule {
-    func configure(application: AppHooksModules.PlatformApplication) throws {}
+    func configure(application: PlatformApplication) throws {}
 }
 
 private struct LifecycleHostView: View {
