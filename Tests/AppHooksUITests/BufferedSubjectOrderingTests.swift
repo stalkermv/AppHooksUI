@@ -12,7 +12,7 @@ struct BufferedSubjectOrderingTests {
         defer { subscriber.release.signal() }
         let finished = DispatchGroup()
         finished.enter()
-        DispatchQueue.global().async {
+        Thread.detachNewThread {
             subject.receive(subscriber: subscriber)
             finished.leave()
         }
@@ -106,7 +106,7 @@ struct BufferedSubjectOrderingTests {
         defer { subscriber.release.signal() }
         let finished = DispatchSemaphore(value: 0)
 
-        DispatchQueue.global().async {
+        Thread.detachNewThread {
             subject.receive(subscriber: subscriber)
             finished.signal()
         }
@@ -129,7 +129,7 @@ struct BufferedSubjectOrderingTests {
         defer { subscriber.release.signal() }
         let finished = DispatchSemaphore(value: 0)
 
-        DispatchQueue.global().async {
+        Thread.detachNewThread {
             subject.receive(subscriber: subscriber)
             finished.signal()
         }
@@ -151,7 +151,7 @@ struct BufferedSubjectOrderingTests {
         defer { subscriber.release.signal() }
         let finished = DispatchSemaphore(value: 0)
 
-        DispatchQueue.global().async {
+        Thread.detachNewThread {
             subject.receive(subscriber: subscriber)
             finished.signal()
         }
@@ -173,13 +173,13 @@ struct BufferedSubjectOrderingTests {
         let operationsFinished = DispatchSemaphore(value: 0)
         let receiveFinished = DispatchSemaphore(value: 0)
 
-        DispatchQueue.global().async {
+        Thread.detachNewThread {
             subject.receive(subscriber: subscriber)
             receiveFinished.signal()
         }
         try #require(subscriber.started.wait(timeout: .now() + 5) == .success)
 
-        DispatchQueue.global().async {
+        Thread.detachNewThread {
             subject.send(3)
             subject.send(completion: .finished)
             operationsFinished.signal()

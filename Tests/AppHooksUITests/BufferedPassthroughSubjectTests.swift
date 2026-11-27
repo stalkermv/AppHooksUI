@@ -128,7 +128,7 @@ struct BufferedPassthroughSubjectTests {
         defer { probe.releaseFirstCallback.signal() }
 
         let sendFinished = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async {
+        Thread.detachNewThread {
             subject.send(1)
             sendFinished.signal()
         }

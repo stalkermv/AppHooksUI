@@ -139,7 +139,7 @@ final class SerializationProbe: Subscriber, @unchecked Sendable {
 
         if isFirstCallback {
             firstCallbackStarted.signal()
-            DispatchQueue.global().async {
+            Thread.detachNewThread {
                 self.concurrentSendStarted.signal()
                 self.subject.send(input + 1)
                 self.concurrentSendFinished.signal()
